@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -88,6 +89,24 @@ class TaskViewModelTest {
         dao.failReads = false
         vm.reduce(TaskAction.LoadTasks)
         runCurrent()
+        assertEquals(TaskState.Loaded(emptyList()), vm.state.value)
+    }
+
+    @Test
+    fun `completed task is deleted only after ten seconds`() = runTest {
+        val vm = createViewModel()
+        vm.reduce(TaskAction.AddTask("Задача"))
+        runCurrent()
+        val id = dao.tasks.value.single().id
+        vm.reduce(TaskAction.UpdateTaskStatus(id, true))
+        runCurrent()
+        assertTrue(dao.tasks.value.single().isDone)
+        advanceTimeBy(9_999)
+        runCurrent()
+        assertEquals(1, dao.tasks.value.size)
+        advanceTimeBy(1)
+        runCurrent()
+        assertTrue(dao.tasks.value.isEmpty())
         assertEquals(TaskState.Loaded(emptyList()), vm.state.value)
     }
 
