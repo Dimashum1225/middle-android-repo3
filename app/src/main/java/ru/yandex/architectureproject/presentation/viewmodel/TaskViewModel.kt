@@ -2,6 +2,8 @@ package ru.yandex.architectureproject.presentation.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,12 +32,40 @@ class TaskViewModel(
     private val _state = MutableStateFlow<TaskState>(TaskState.Loading)
     val state: StateFlow<TaskState> = _state.asStateFlow()
 
+    private var loadJob: Job? = null
+
     init {
         reduce(TaskAction.LoadTasks)
     }
 
     fun reduce(action: TaskAction) {
-        // TODO: Здесь должна быть обработка действий
+        when (action) {
+            TaskAction.LoadTasks -> {
+                // Room сам публикует изменения; не создаём повторные подписки.
+                if (loadJob?.isActive == true) return
+                loadJob = viewModelScope.launch { loadTasks() }
+            }
+            is TaskAction.AddTask -> changeTasks { addTaskUseCase(action.text) }
+            is TaskAction.DeleteTask -> changeTasks { deleteTaskUseCase(action.taskId) }
+            is TaskAction.UpdateTaskStatus -> changeTasks {
+                if (action.isDone) {
+                    completeTaskUseCase(action.taskId)
+                } else {
+                    incompleteTaskUseCase(action.taskId)
+                }
+            }
+        }
+    }
+
+    private fun changeTasks(change: suspend () -> Unit): Job = viewModelScope.launch {
+        try {
+            withContext(ioDispatcher) { change() }
+            reduce(TaskAction.LoadTasks)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _state.value = TaskState.Error(e.message ?: "Ошибка изменения задачи")
+        }
     }
 
     private suspend fun loadTasks() {
