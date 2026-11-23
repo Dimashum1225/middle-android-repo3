@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +34,7 @@ class TaskViewModel(
     val state: StateFlow<TaskState> = _state.asStateFlow()
 
     private var loadJob: Job? = null
+    private val taskJobs = mutableMapOf<Int, Job>()
 
     init {
         reduce(TaskAction.LoadTasks)
@@ -46,8 +48,8 @@ class TaskViewModel(
                 loadJob = viewModelScope.launch { loadTasks() }
             }
             is TaskAction.AddTask -> changeTasks { addTaskUseCase(action.text) }
-            is TaskAction.DeleteTask -> changeTasks { deleteTaskUseCase(action.taskId) }
-            is TaskAction.UpdateTaskStatus -> changeTasks {
+            is TaskAction.DeleteTask -> changeTask(action.taskId) { deleteTaskUseCase(action.taskId) }
+            is TaskAction.UpdateTaskStatus -> changeTask(action.taskId) {
                 if (action.isDone) {
                     completeTaskUseCase(action.taskId)
                 } else {
@@ -57,7 +59,26 @@ class TaskViewModel(
         }
     }
 
-    private fun changeTasks(change: suspend () -> Unit): Job = viewModelScope.launch {
+    private fun changeTask(taskId: Int, change: suspend () -> Unit) {
+        val previousJob = taskJobs.remove(taskId)
+        previousJob?.cancel()
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            // Дожидаемся отмены предыдущего изменения этой же задачи.
+            previousJob?.join()
+            performChange(change)
+        }
+        taskJobs[taskId] = job
+        job.invokeOnCompletion {
+            if (taskJobs[taskId] === job) taskJobs.remove(taskId)
+        }
+        job.start()
+    }
+
+    private fun changeTasks(change: suspend () -> Unit) {
+        viewModelScope.launch { performChange(change) }
+    }
+
+    private suspend fun performChange(change: suspend () -> Unit) {
         try {
             withContext(ioDispatcher) { change() }
             reduce(TaskAction.LoadTasks)

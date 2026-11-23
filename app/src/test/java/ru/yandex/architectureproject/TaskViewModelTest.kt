@@ -110,9 +110,80 @@ class TaskViewModelTest {
         assertEquals(TaskState.Loaded(emptyList()), vm.state.value)
     }
 
+    @Test
+    fun `unchecking task cancels its pending deletion`() = runTest {
+        val vm = createViewModel()
+        vm.reduce(TaskAction.AddTask("Сохранить"))
+        runCurrent()
+        val id = dao.tasks.value.single().id
+        vm.reduce(TaskAction.UpdateTaskStatus(id, true))
+        runCurrent()
+        advanceTimeBy(5_000)
+        vm.reduce(TaskAction.UpdateTaskStatus(id, false))
+        runCurrent()
+        advanceTimeBy(20_000)
+        runCurrent()
+        assertFalse(dao.tasks.value.single().isDone)
+        assertEquals(0, dao.deleteCalls)
+    }
+
+    @Test
+    fun `rechecking starts a fresh deadline without affecting another task`() = runTest {
+        val vm = createViewModel()
+        vm.reduce(TaskAction.AddTask("Первая"))
+        vm.reduce(TaskAction.AddTask("Вторая"))
+        runCurrent()
+        val first = dao.tasks.value[0].id
+        val second = dao.tasks.value[1].id
+        vm.reduce(TaskAction.UpdateTaskStatus(first, true))
+        vm.reduce(TaskAction.UpdateTaskStatus(second, true))
+        runCurrent()
+        advanceTimeBy(5_000)
+        vm.reduce(TaskAction.UpdateTaskStatus(first, false))
+        vm.reduce(TaskAction.UpdateTaskStatus(first, true))
+        runCurrent()
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals(listOf(first), dao.tasks.value.map { it.id })
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertTrue(dao.tasks.value.isEmpty())
+    }
+
+    @Test
+    fun `manual deletion cancels the pending automatic deletion`() = runTest {
+        val vm = createViewModel()
+        vm.reduce(TaskAction.AddTask("Удалить"))
+        runCurrent()
+        val id = dao.tasks.value.single().id
+        vm.reduce(TaskAction.UpdateTaskStatus(id, true))
+        runCurrent()
+        vm.reduce(TaskAction.DeleteTask(id))
+        runCurrent()
+        advanceTimeBy(20_000)
+        runCurrent()
+        assertTrue(dao.tasks.value.isEmpty())
+        assertEquals(1, dao.deleteCalls)
+    }
+
+    @Test
+    fun `clearing ViewModel cancels all pending deletions`() = runTest {
+        val vm = createViewModel()
+        vm.reduce(TaskAction.AddTask("Оставить"))
+        runCurrent()
+        vm.reduce(TaskAction.UpdateTaskStatus(dao.tasks.value.single().id, true))
+        runCurrent()
+        store.clear()
+        advanceTimeBy(20_000)
+        runCurrent()
+        assertEquals(1, dao.tasks.value.size)
+        assertEquals(0, dao.deleteCalls)
+    }
+
     private class FakeTaskDao : TaskDao {
         val tasks = MutableStateFlow<List<Task>>(emptyList())
         var subscriptions = 0
+        var deleteCalls = 0
         var failWrites = false
         var failReads = false
         private var nextId = 1
@@ -133,6 +204,7 @@ class TaskViewModelTest {
         }
 
         override suspend fun deleteTask(taskId: Int) {
+            deleteCalls++
             tasks.value = tasks.value.filterNot { it.id == taskId }
         }
     }
